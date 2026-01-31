@@ -1,0 +1,68 @@
+@startuml
+' C4-PlantUML: System Context (C1) — Central Platform + Farm Agents
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+title AgroTech Farm Monitoring — System Context (C1) | (Central + Farm Agents)
+
+LAYOUT_WITH_LEGEND()
+
+' --- Actors ---
+Person(farmOperator, "Farm Operator (On-duty)", "Receives alerts, monitors incidents, responds to emergencies on the farm")
+Person(farmTechnician, "Farm Technician", "Maintains cameras/equipment, performs diagnostics, executes local operational tasks")
+Person(sysAdmin, "System Administrator", "Manages users/roles, onboarding farms, device registration, configurations, and integrations")
+
+' --- Our software systems ---
+System_Boundary(agrotech, "AgroTech Farm Monitoring  Systems") {
+
+  System(central, "AgroTech Central Platform", "Central server platform", "Centralized management: farms onboarding, configuration, incidents, analytics, unified view across farms, integration/export of metrics")
+
+  System(agent, "AgroTech Farm Agent System", "Edge system on each farm", "Real-time video analytics at the edge, local alerting, equipment control, offline operation, and sync with the Central Platform when connectivity is available")
+}
+
+' --- External systems / devices ---
+System_Ext(cameras, "Video Cameras", "Multi-vendor cameras", "Provide live video streams from farm pens")
+System_Ext(equipment, "Farm Equipment", "Feeders / Drinkers / Water filtration (multi-vendor)", "Controlled devices and sensors producing telemetry")
+System_Ext(idp, "Identity Provider (SSO/OIDC)", "External auth system", "Authenticates users and issues tokens for the Central Platform")
+System_Ext(notifProvider, "Notification Provider", "SMS / Push / Telephony", "Delivers notifications when Internet connectivity is available")
+System_Ext(monitoring, "External Monitoring / BI System", "Metrics consumer", "Receives exported metrics for dashboards, etc")
+
+' --- Relationships: People ---
+Rel(farmOperator, central, "Monitors incidents, acknowledges alerts, views status", "Web/Mobile UI")
+Rel(farmTechnician, central, "Manages devices, views diagnostics, maintenance tasks", "Web UI")
+Rel(sysAdmin, central, "Administers users/roles, farms onboarding, configurations", "Web UI")
+
+' Local interaction with edge (FOR OFFLINE OPERATION when the internet is not available)
+Rel(farmOperator, agent, "Receives urgent alerts & can view local status (offline)", "Local UI / LAN")
+Rel(farmTechnician, agent, "Performs local diagnostics and maintenance (offline)", "Local UI / LAN")
+
+' --- Relationships: Devices and edge ---
+Rel(cameras, agent, "Streams video", "Streaming Protocols")
+Rel(agent, equipment, "Controls equipment; reads telemetry", "Vendor protocols")
+
+' --- Relationships: Central <-> Edge sync ---
+Rel(central, agent, "Distributes configs, updates, policies etc", "Secure channel; when online")
+Rel(agent, central, "Syncs incidents, events, metrics; uploads summaries", "Store-and-forward approach; final sync (<10 min lag)")
+
+' --- Auth / notifications / monitoring ---
+Rel(central, idp, "Authenticates users, validates tokens", "OIDC/SAML)")
+Rel(central, notifProvider, "Sends alerts to staff when online", "HTTPS API")
+Rel(central, monitoring, "Exports metrics / KPIs", "HTTPS / Push / Batch export")
+
+' Notes
+note right of agent
+  Key constraints:
+  - Real-time edge analytics (milliseconds)
+  - Local alerting (≤ 5 seconds) even without Internet
+  - Offline operation with later synchronization
+end note
+
+note right of central
+  Provides:
+  - Unified view across farms
+  - Central configuration and governance
+  - Access control / audit
+  - Export of metrics to external systems
+end note
+
+@enduml
