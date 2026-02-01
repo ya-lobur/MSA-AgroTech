@@ -4,7 +4,8 @@
 ' NOTE!!!
 ' Main idea of the alternative: much cheaper and simpler, cuz analytics & incident detection will be managed in the Central Platform
 ' But this may violate the requirements for working without the Internet and the speed of response to incidents
-' That's why the alternative will be rejected in the ADR
+' But that might be a good alternative for the business at the MVP stage
+' (cuz it will be much cheaper to miss a fight between animals when a central server is not available than buy and maintain local ML servers)
 
 !include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
 
