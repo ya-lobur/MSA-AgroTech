@@ -1,0 +1,80 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+title Assignment & Escalation Engine — Internal Component Diagram (C4)
+
+LAYOUT_WITH_LEGEND()
+
+' --- External components/containers (context for this component) ---
+Component_Ext(incidentApp, "Incident Application Service", "Component", "Orchestrates incident lifecycle and calls assignment/escalation decisions")
+Component_Ext(slaTimer, "SLA Timer / Escalation Scheduler", "Component", "Triggers escalation checks based on timers/SLA breaches")
+Component_Ext(incidentRepo, "Incident Repository", "Component", "Reads/Writes incidents, assignments, history")
+Component_Ext(eventsPub, "Incident Events Publisher", "AMQP Publisher", "Publishes incident_assigned / incident_escalated events")
+ContainerDb_Ext(centralDb, "Central DB", "PostgreSQL", "Stores rules, rosters, escalation policies, assignment history")
+
+' --- Boundary: Assignment & Escalation Engine ---
+
+Container_Boundary(assignEngine, "Assignment  Escalation Engine") {
+
+  Component(inputModel, "Incident Context Mapper", "Component", "Builds normalized context for decision: farm/zone/type/severity, current assignee, timestamps")
+
+  Component(ruleEvaluator, "Assignment Rule Evaluator", "Component", "Selects routing target (team/role) based on rules: farm/zone/type/severity/time window")
+
+  Component(rosterResolver, "On-call Resolver", "Component", "Resolves current responsible person(s) for target team/role")
+
+  Component(ackTracker, "Acknowledgement Tracker", "Component", "Tracks ack state and 'no response' conditions used by escalation policies")
+
+  Component(decisionBuilder, "Decision Builder", "Component", "Produces a deterministic decision object: assignee, escalation chain, retry windows, idempotency key")
+
+  Component(domainEventFactory, "Domain Event Factory", "Component", "Creates events: IncidentAssigned / IncidentReassigned / IncidentEscalated with correlation/idempotency keys")
+
+  Component(ruleRepo, "Rules Repository", "Component", "Access to assignment rules, escalation policies, rosters (read models + caching)")
+
+  Component(cache, "Rule Cache", "Component", "Caches rules/rosters/policies to reduce DB reads; supports TTL and invalidation")
+}
+
+' --- Inputs ---
+Rel(incidentApp, inputModel, "Calls with incident details", "in-proc")
+Rel(slaTimer, inputModel, "Calls on SLA breach / timer tick", "in-proc")
+
+' --- Build context + evaluate rules ---
+Rel(inputModel, ruleEvaluator, "Provides normalized incident context", "in-proc")
+Rel(ruleEvaluator, ruleRepo, "Loads assignment rules", "in-proc")
+Rel(ruleRepo, cache, "Reads cached rules/rosters/policies", "in-proc")
+Rel(ruleRepo, centralDb, "Reads rules/rosters/policies", "SQL")
+
+' --- Resolve on-call + escalation ---
+Rel(ruleEvaluator, rosterResolver, "Resolves team/role target", "in-proc")
+Rel(rosterResolver, ruleRepo, "Loads roster/on-call schedules", "in-proc")
+Rel(rosterResolver, cache, "Reads cached roster", "in-proc")
+
+Rel(inputModel, ackTracker, "Reads current ack state", "in-proc")
+Rel(ackTracker, incidentRepo, "Reads assignment/ack history", "in-proc")
+
+
+' --- Output decision + events ---
+Rel(rosterResolver, decisionBuilder, "Provides assignee candidates", "in-proc")
+Rel(decisionBuilder, domainEventFactory, "Builds events with keys", "in-proc")
+
+' --- Persist + publish (обычно делается IncidentApp, но показываем связи для понимания) ---
+Rel(domainEventFactory, incidentApp, "Returns decision + domain events", "in-proc")
+Rel(incidentApp, incidentRepo, "Persists assignment changes", "in-proc")
+Rel(incidentApp, eventsPub, "Publishes assigned/escalated events", "in-proc")
+
+note left of ruleRepo
+  Typical tables:
+  - assignment_rules
+  - escalation_policies
+  - on_call_roster
+  - team_membership
+end note
+
+note right of decisionBuilder
+  Determinism:
+  - decision must be reproducible
+  - stable idempotency key:
+    (incident_id + state_version + action_type)
+end note
+
+
+
+@enduml
