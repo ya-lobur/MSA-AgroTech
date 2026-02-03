@@ -1,0 +1,96 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+title Video Gateway — Component Diagram (C3) | Alternative: Central-first Analytics
+
+LAYOUT_WITH_LEGEND()
+
+' --- External systems/containers (from C2) ---
+System_Ext(cameras, "Video Cameras", "Multi-vendor cameras", "Provide live video streams (RTSP/ONVIF/etc)")
+
+Container_Ext(videoIngestSvc, "Central Video Ingest Service", "Service", "Receives video streams/clips from farms, persists, exposes to analytics")
+
+Container_Ext(deviceSvc, "Device Registry Service", "Service", "Devices, provisioning, capture policies, vendor profiles")
+
+Container_Ext(offlineBuffer, "Offline Buffer", "Service", "Buffers clips/metadata for later upload when connectivity returns")
+
+ContainerDb_Ext(edgeStore, "Edge Store", "Local s3", "Stores buffered clips/metadata and local state")
+
+' --- Video Gateway boundary (edge container internal) ---
+Container_Boundary(videoGateway, "Video Gateway") {
+
+  Component(controlApi, "Control API", "HTTP (local)",  "Local control plane: start/stop streams, health/status, apply capture policy")
+
+  Component(cameraConnector, "Camera Connector", "Component", "Connects to cameras via RTSP/ONVIF, manages sessions, reconnects")
+
+  Component(streamManager, "Stream Manager", "Component", "Creates/controls pipelines per camera, handles fan-out to upload and local buffering")
+
+  Component(preprocessor, "Minimal Preprocessor", "Component", "Optional: resizing, FPS downsampling, timestamps, keyframe extraction")
+
+  Component(clipper, "Clip/Fragment Builder", "Component", "Cuts stream into clips/fragments according to policy (duration, keyframes, triggers)")
+
+  Component(policyClient, "Capture Policy Client", "Component", "Fetches capture policies/config versions (polling/webhook), validates and applies")
+
+  Component(uploadClient, "Upload Client", "Component", "Uploads stream/clips + metadata to Central Video Ingest via secure channel; retries")
+
+  Component(netMonitor, "Connectivity Monitor", "Component", "Detects online/offline state; provides backpressure signals to pipeline")
+
+  Component(metadataWriter, "Metadata Writer", "Component", "Writes clip manifests, checksums, offsets, correlation IDs for replay/upload")
+
+  Component(health, "Health & Metrics", "Component", "Exports health (per camera), throughput, drop rate, queue size")
+}
+
+' --- Camera ingest ---
+Rel(cameras, cameraConnector, "Streams video", "RTSP/ONVIF/etc")
+Rel(cameraConnector, streamManager, "Delivers frames/packets", "in-proc")
+
+' --- Policy management ---
+Rel(policyClient, deviceSvc, "Fetches capture policies/config versions", "HTTPS/gRPC")
+Rel(policyClient, streamManager, "Applies policies to pipelines", "in-proc")
+
+' --- Processing pipeline ---
+Rel(streamManager, preprocessor, "Optional preprocessing", "in-proc")
+Rel(preprocessor, clipper, "Builds clips/fragments", "in-proc")
+
+' --- Connectivity-aware routing ---
+Rel(netMonitor, streamManager, "Online/offline state + backpressure", "in-proc")
+
+Rel(clipper, uploadClient, "Sends clips/fragments + metadata when online", "in-proc")
+Rel(uploadClient, videoIngestSvc, "Uploads clips/stream + metadata", "Secure channel; high bandwidth")
+
+' --- Offline buffering ---
+Rel(clipper, offlineBuffer, "Sends clips/metadata when offline or congested", "Local calls")
+Rel(offlineBuffer, edgeStore, "Persists buffered clips/metadata", "Local S3 API")
+
+Rel(metadataWriter, edgeStore, "Stores manifests/checksums/offsets", "Local S3 API")
+Rel(streamManager, metadataWriter, "Writes upload/buffer metadata", "in-proc")
+
+' --- Control & observability ---
+Rel(controlApi, streamManager, "Start/stop pipelines, apply overrides", "in-proc")
+Rel(health, streamManager, "Collects metrics", "in-proc")
+
+note left of netMonitor
+  Offline strategy:
+  - stop/limit uplink
+  - switch to buffering
+  - preserve metadata for replay
+end note
+
+note bottom of uploadClient
+  Reliability goals:
+  - retry with backoff
+  - chunked upload
+  - checksum verification
+  - idempotent clip IDs
+end note
+
+
+
+note right of policyClient
+  Capture policy examples:
+  - FPS / resolution
+  - clip length (e.g., 5–10s)
+  - keyframe-only mode
+  - upload throttling
+end note
+
+@enduml

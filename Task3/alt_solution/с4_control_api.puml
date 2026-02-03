@@ -1,0 +1,79 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+title Control API — Internal Component Diagram (C4) | Video Gateway
+
+LAYOUT_WITH_LEGEND()
+
+' --- External components (within Video Gateway C3) ---
+Component_Ext(streamManager, "Stream Manager", "Component", "Controls camera pipelines, start/stop/restart, routing online/offline")
+Component_Ext(policyClient, "Capture Policy Client", "Component", "Fetches and applies capture policies/config versions")
+Component_Ext(health, "Health & Metrics", "Component", "Collects per-camera status, throughput, drop rate, queue sizes")
+
+' Optional: where Control API is called from (maintenance tooling)
+Component_Ext(opsClient, "Maintenance Client", "CLI / Local UI / Operator Tool", "Used by technician/admin on LAN to control Video Gateway")
+
+' --- Control API boundary ---
+Boundary(controlApi, "Control API") {
+
+  Component(httpRouter, "HTTP Router", "FastAPI/HTTP", "Routes requests, exposes REST endpoints")
+  Component(authn, "AuthN/AuthZ Middleware", "Component", "Validates local credentials/tokens, enforces roles (tech/admin)")
+  Component(rateLimit, "Rate Limiter", "Component", "Prevents abuse, protects from accidental loops")
+  Component(validation, "Request Validator", "Component", "Validates payloads (camera_id, policy, limits), schema + constraints")
+
+  Component(cmdHandlers, "Command Handlers", "Component", "Implements commands: start/stop/restart pipeline, apply policy override, force re-sync policies")
+
+  Component(queryHandlers, "Query Handlers", "Component", "Implements queries: list cameras, pipeline status, current applied policy, recent errors")
+
+  Component(statusStream, "Status Streaming", "WebSocket/SSE", "Pushes live status updates to maintenance client")
+
+  Component(audit, "Audit Logger", "Component", "Writes audit trail for changes (who/when/what)")
+  Component(errorMapper, "Error Mapper", "Component", "Maps internal errors to stable API responses/codes")
+}
+
+' --- Relations: external caller ---
+Rel(opsClient, httpRouter, "Calls control endpoints", "HTTP/LAN")
+Rel(opsClient, statusStream, "Subscribes to status updates", "WebSocket/SSE")
+
+' --- Request flow ---
+Rel(httpRouter, authn, "Auth check", "in-proc")
+Rel(authn, rateLimit, "Rate limit", "in-proc")
+Rel(rateLimit, validation, "Validate request", "in-proc")
+
+Rel(validation, cmdHandlers, "Routes commands", "in-proc")
+Rel(validation, queryHandlers, "Routes queries", "in-proc")
+
+' --- Command interactions ---
+Rel(cmdHandlers, streamManager, "Start/stop/restart pipelines; apply overrides", "in-proc")
+Rel(cmdHandlers, policyClient, "Force pull/apply capture policies", "in-proc")
+Rel(cmdHandlers, audit, "Write audit record", "in-proc")
+
+' --- Query interactions ---
+Rel(queryHandlers, streamManager, "Read pipeline state", "in-proc")
+Rel(queryHandlers, policyClient, "Read current policy/version", "in-proc")
+Rel(queryHandlers, health, "Read metrics/health snapshot", "in-proc")
+
+' --- Status streaming ---
+Rel(statusStream, streamManager, "Subscribes to state changes", "in-proc")
+Rel(statusStream, health, "Streams health/metrics updates", "in-proc")
+
+' --- Error handling ---
+Rel(cmdHandlers, errorMapper, "Map errors to API codes", "in-proc")
+Rel(queryHandlers, errorMapper, "Map errors to API codes", "in-proc")
+
+note left of cmdHandlers
+  Typical commands:
+  - POST /pipelines/{camera_id}:start
+  - POST /pipelines/{camera_id}:stop
+  - POST /pipelines/{camera_id}:restart
+  - POST /policies:refresh
+  - PUT  /pipelines/{camera_id}/override
+end note
+
+note right of authn
+  MVP-friendly approach:
+  - local admin token / mTLS on LAN
+  - role-based access: technician/admin
+  - audit for every mutating call
+end note
+
+@enduml
