@@ -1,0 +1,94 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+title AgroTech Farm Monitoring — Container Diagram (C2) | RabbitMQ + MQTT Edge
+
+LAYOUT_WITH_LEGEND()
+
+Person(farmOperator, "Farm Operator", "Receives alerts, monitors incidents")
+Person(farmTechnician, "Farm Technician", "Maintains equipment and devices")
+Person(sysAdmin, "System Administrator", "Manages users, farms, configs")
+
+System_Boundary(centralSys, "AgroTech Central Platform") {
+
+  Container(webApp, "Web/Mobile UI", "SPA / Mobile", "Incident dashboard, device/farm management")
+  Container(apiGateway, "API Gateway / BFF", "HTTPS", "Single entrypoint, authz, rate limits")
+
+  Container(farmSvc, "Farm Management Service", "Service", "Farms, pens/zones, agent assignment, topology")
+  Container(deviceSvc, "Device Registry Service", "Service", "Devices, provisioning, configs, vendor profiles")
+  Container(incidentSvc, "Incident Service", "Service", "Incident lifecycle, dedup, correlation, SLA timers")
+  Container(notificationSvc, "Notification Service", "Service", "Routing alerts to channels, templates, rate limits")
+  Container(syncSvc, "Edge Sync Service", "Service", "Receives edge batches/events, ensures idempotency, acks")
+  Container(metricsSvc, "Telemetry/Metrics Service", "Service", "Agent/equipment metrics, health, aggregation")
+  Container(exportSvc, "BI Export Service", "Service", "Exports KPIs to external monitoring/BI")
+
+  ContainerQueue(rabbit, "RabbitMQ", "AMQP", "Event bus for commands/events, retries, DLQ")
+
+  ContainerDb(centralDb, "Central DB", "PostgreSQL (logical per-service schemas)", "Incidents, farms, devices, configs, audit")
+}
+
+System_Boundary(edgeSys, "AgroTech Farm Agent System") {
+  Container(localUI, "Local UI", "Web UI (LAN)", "Offline status view, local acknowledgements")
+  Container(videoIngest, "Video Ingest", "Service", "Connects to cameras, buffering, preprocessing")
+  Container(inference, "Inference Engine", "Service", "ML inference, real-time detection")
+  Container(localIncident, "Local Incident Manager", "Service", "Dedup, rules, triggers, local incident creation")
+  Container(deviceGateway, "Equipment Gateway", "Service", "Normalized API over vendor adapters, control + telemetry")
+  Container(localAlert, "Local Alerting", "Service", "Offline alerts (LAN), siren/panel integration if needed")
+  Container(syncClient, "Sync Client", "Service", "Store-and-forward: pushes events/metrics to Central, pulls configs")
+
+  ContainerQueue(mqtt, "MQTT Broker (edge)", "MQTT", "Local messaging with devices/adapters (optional)")
+  ContainerDb(edgeStore, "Edge Store", "SQLite/RocksDB", "Offline queue, local state, event log")
+}
+
+System_Ext(idp, "Identity Provider", "SSO/OIDC", "External auth")
+System_Ext(notifProvider, "Notification Provider", "SMS/Push/Telephony", "Online notifications")
+System_Ext(monitoring, "External Monitoring/BI", "System", "Consumes exported metrics/KPIs")
+System_Ext(cameras, "Video Cameras", "Device", "Video streams")
+System_Ext(equipment, "Farm Equipment", "Device", "Feeders/Drinkers/Water filtration")
+
+' People interactions
+Rel(farmOperator, webApp, "Uses", "HTTPS")
+Rel(farmTechnician, webApp, "Uses", "HTTPS")
+Rel(sysAdmin, webApp, "Uses", "HTTPS")
+Rel(farmOperator, localUI, "Uses (offline)", "LAN/HTTP")
+Rel(farmTechnician, localUI, "Uses (offline)", "LAN/HTTP")
+
+' Central auth
+Rel(apiGateway, idp, "Authenticates/validates tokens", "OIDC")
+Rel(webApp, apiGateway, "Calls", "HTTPS")
+
+' Central internal
+Rel(apiGateway, farmSvc, "Routes requests", "HTTP/gRPC")
+Rel(apiGateway, deviceSvc, "Routes requests", "HTTP/gRPC")
+Rel(apiGateway, incidentSvc, "Routes requests", "HTTP/gRPC")
+
+Rel(syncSvc, rabbit, "Publishes edge events", "AMQP")
+Rel(incidentSvc, rabbit, "Consumes incident events", "AMQP")
+Rel(notificationSvc, rabbit, "Consumes alert events", "AMQP")
+Rel(metricsSvc, rabbit, "Consumes telemetry events", "AMQP")
+
+Rel(notificationSvc, notifProvider, "Sends notifications", "HTTPS")
+Rel(exportSvc, monitoring, "Exports KPIs", "HTTPS/Batch")
+Rel(farmSvc, centralDb, "Reads/Writes", "SQL")
+Rel(deviceSvc, centralDb, "Reads/Writes", "SQL")
+Rel(incidentSvc, centralDb, "Reads/Writes", "SQL")
+Rel(metricsSvc, centralDb, "Reads/Writes", "SQL")
+
+' Edge devices
+Rel(cameras, videoIngest, "Streams video", "RTSP/ONVIF/etc")
+Rel(videoIngest, inference, "Frames/streams", "in-proc/IPC")
+Rel(inference, localIncident, "Detections/events", "in-proc/IPC")
+
+Rel(localIncident, edgeStore, "Stores incidents/events", "Local DB")
+Rel(deviceGateway, edgeStore, "Stores telemetry/state", "Local DB")
+
+Rel(deviceGateway, equipment, "Controls + telemetry", "Vendor protocols")
+Rel(deviceGateway, mqtt, "Publishes/consumes device messages", "MQTT")
+Rel(localIncident, localAlert, "Triggers local alerts", "Local calls")
+Rel(localUI, localAlert, "Receives local alerts,incidents", "Local calls")
+
+' Sync
+Rel(syncClient, edgeStore, "Reads buffered batches/events", "Local DB")
+Rel(syncClient, syncSvc, "Syncs events/metrics, pulls configs", "HTTPS/gRPC; store-and-forward")
+Rel(syncSvc, centralDb, "Persists sync state/acks", "SQL")
+
+@enduml

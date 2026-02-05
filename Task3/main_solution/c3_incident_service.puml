@@ -1,0 +1,67 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+title Incident Service — Component Diagram (C3)
+
+LAYOUT_WITH_LEGEND()
+
+' --- External containers (from C2) ---
+Container_Ext(apiGateway, "API Gateway / BFF", "HTTPS", "Entry point for UI/API calls")
+Container_Ext(rabbit, "RabbitMQ", "AMQP", "Event bus for commands/events, retries, DLQ")
+ContainerDb_Ext(centralDb, "Central DB", "PostgreSQL", "Operational data store (logical schema per service)")
+Container_Ext(notificationSvc, "Notification Service", "Service", "Routes alerts to channels, templates, rate limits")
+
+' --- Incident Service boundary ---
+Container_Boundary(incidentSvc, "Incident Service") {
+
+  Component(restApi, "Incident REST API", "HTTP Controller", "CRUD for incidents, ack/resolve, queries for UI")
+  Component(authz, "AuthZ/Policy Guard", "Component", "Enforces roles/permissions for incident operations")
+
+  Component(incidentApp, "Incident Application Service", "Component", "Orchestrates lifecycle: create/ack/resolve; applies domain rules; triggers assignment/escalation")
+
+  Component(eventConsumer, "Incident Events Consumer", "AMQP Consumer", "Consumes edge events (incident_detected/anomaly_detected) and triggers incident creation/update flows")
+
+  Component(dedup, "Deduplication Engine", "Component", "Prevents duplicates (idempotency keys/fingerprints/time window)")
+
+  Component(assign, "Assignment & Escalation Engine", "Component", "Selects responsible/on-call, builds escalation chain, decides when to reassign/escalate")
+
+  Component(sla, "SLA Timer / Escalation Scheduler", "Component", "Tracks ack/resolve timers; triggers escalation when SLA breached")
+
+  Component(eventPublisher, "Incident Events Publisher", "AMQP Publisher", "Publishes domain events: incident_created/assigned/escalated/closed")
+
+  Component(repo, "Incident Repository", "Component", "Stores incidents, assignments, status history, audit trail, dedup keys")
+
+  Component(mapper, "Event Mapper", "Component", "Maps incoming messages to domain commands/events and back")
+}
+
+' --- API path ---
+Rel(apiGateway, restApi, "Calls Incident endpoints", "HTTPS")
+Rel(restApi, authz, "Checks access", "in-proc")
+Rel(restApi, incidentApp, "Executes commands/queries", "in-proc")
+
+' --- Async path ---
+Rel(rabbit, eventConsumer, "Delivers edge events", "AMQP")
+Rel(eventConsumer, mapper, "Parses/validates", "in-proc")
+Rel(mapper, incidentApp, "Invokes create/update", "in-proc")
+
+' --- Domain orchestration ---
+Rel(incidentApp, dedup, "Dedup/idempotency", "in-proc")
+Rel(incidentApp, assign, "Selects assignee; builds escalation", "in-proc")
+Rel(incidentApp, sla, "Starts/updates timers", "in-proc")
+
+' --- Persistence ---
+Rel(incidentApp, repo, "Reads/Writes", "in-proc")
+Rel(repo, centralDb, "Stores incidents, assignments, history", "SQL")
+
+' --- Publishing ---
+Rel(incidentApp, eventPublisher, "Publishes events", "in-proc")
+Rel(eventPublisher, rabbit, "Sends events", "AMQP")
+Rel(rabbit, notificationSvc, "Notification consumes assigned/escalated events", "AMQP")
+
+note left of assign
+  Assignment examples:
+  - by farm/zone/type/severity
+  - per shift (on-call roster)
+  - escalation chain if no ack
+end note
+
+@enduml

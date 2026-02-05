@@ -1,0 +1,64 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+title Device Registry Service — Component Diagram (C3)
+
+LAYOUT_WITH_LEGEND()
+
+' --- External containers (from C2) ---
+Container_Ext(apiGateway, "API Gateway / BFF", "HTTPS", "Entry point for UI/API calls")
+Container_Ext(rabbit, "RabbitMQ", "AMQP", "Event bus for commands/events, retries, DLQ")
+ContainerDb_Ext(centralDb, "Central DB", "PostgreSQL", "Operational data store (logical schema per service)")
+Container_Ext(syncSvc, "Edge Sync Service", "Service", "Receives edge batches/events, ensures idempotency, acks")
+Container_Ext(farmSvc, "Farm Management Service", "Service", "Farms, zones/pens topology, agent assignment")
+
+' --- Device Registry boundary ---
+Container_Boundary(deviceSvc, "Device Registry Service") {
+
+  Component(restApi, "Device Registry REST API", "HTTP Controller", "CRUD for devices, vendor profiles, provisioning, config policies")
+
+  Component(authz, "AuthZ/Policy Guard", "Component", "Enforces roles/permissions for admin and technician operations")
+
+  Component(registryApp, "Registry Application Service", "Component", "Orchestrates registration/provisioning, config lifecycle, assignments to farms/agents")
+
+  Component(provisioning, "Provisioning Manager", "Component", "Enrolls devices/agents, issues credentials/tokens/cert requests, manages activation state")
+
+  Component(configMgmt, "Config Policy Manager", "Component", "Maintains desired state: capture policies, device configs, rollout strategy, versioning")
+
+  Component(vendorCatalog, "Vendor Profile Catalog", "Component", "Models vendor capabilities, protocol types, parameter constraints, compatibility")
+
+  Component(syncAdapter, "Sync Integration Adapter", "Component", "Prepares 'desired config' payloads for agents; handles config acknowledgements from edge (via Sync Service)")
+
+  Component(eventPublisher, "Device Events Publisher", "AMQP Publisher", "Publishes device_registered/config_updated/device_assigned events")
+
+  Component(eventConsumer, "Device Events Consumer", "AMQP Consumer", "Consumes relevant events if needed (e.g., agent_online/offline, sync_ack)")
+
+  Component(repo, "Device Repository", "Component", "Stores devices, configs, assignments, vendor profiles, rollout status")
+}
+
+' --- Relationships: API path ---
+Rel(apiGateway, restApi, "Calls device/admin endpoints", "HTTPS")
+Rel(restApi, authz, "Checks access", "in-proc")
+Rel(restApi, registryApp, "Executes commands/queries", "in-proc")
+
+' --- Domain logic wiring ---
+Rel(registryApp, provisioning, "Enrolls/registers devices/agents", "in-proc")
+Rel(registryApp, configMgmt, "Creates/updates desired configs & versions", "in-proc")
+Rel(registryApp, vendorCatalog, "Validates against vendor capabilities", "in-proc")
+Rel(registryApp, syncAdapter, "Builds payloads for agents", "in-proc")
+
+' --- Farm topology dependency ---
+Rel(registryApp, farmSvc, "Reads farm topology for assignments", "HTTP/gRPC")
+
+' --- Persistence ---
+Rel(registryApp, repo, "Reads/Writes", "in-proc")
+Rel(repo, centralDb, "Stores registry/config state", "SQL")
+
+' --- Eventing ---
+Rel(registryApp, eventPublisher, "Publishes domain events", "in-proc")
+Rel(eventPublisher, rabbit, "Sends events", "AMQP")
+
+' --- Sync integration (through Edge Sync Service) ---
+Rel(syncAdapter, syncSvc, "Delivers desired config / receives acks", "HTTP/gRPC")
+Rel(rabbit, eventConsumer, "Delivers agent status/sync events (optional)", "AMQP")
+
+@enduml

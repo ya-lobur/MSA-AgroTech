@@ -1,0 +1,98 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+title AgroTech Farm Monitoring — Container Diagram (C2) | Alternative: Central-first Analytics
+
+LAYOUT_WITH_LEGEND()
+
+' --- People ---
+Person(farmOperator, "Farm Operator", "Monitors incidents, acknowledges alerts, views live/recorded fragments")
+Person(farmTechnician, "Farm Technician", "Maintains cameras/equipment, local diagnostics")
+Person(sysAdmin, "System Administrator", "Manages users/roles, onboarding farms, configurations")
+
+' --- Central Platform ---
+System_Boundary(centralSys, "AgroTech Central Platform") {
+
+  Container(webApp, "Web/Mobile UI", "SPA / Mobile", "Incident dashboard, live/recorded fragments, device/farm management")
+  Container(apiGateway, "API Gateway / BFF", "HTTPS", "Single entrypoint, authz, rate limits")
+
+  Container(farmSvc, "Farm Management Service", "Service", "Farms, pens/zones, agent assignment, topology")
+  Container(deviceSvc, "Device Registry Service", "Service", "Devices, provisioning, capture policies, vendor profiles")
+  Container(videoIngestSvc, "Central Video Ingest Service", "Service", "Receives video streams/clips from farms, persists, exposes to analytics")
+  Container(analyticsSvc, "Video Analytics Service", "Service", "Core ML inference + detection pipeline executed centrally")
+  Container(incidentSvc, "Incident Service", "Service", "Incident lifecycle, dedup, correlation, SLA timers")
+  Container(notificationSvc, "Notification Service", "Service", "Routing alerts, templates, rate limits")
+  Container(syncSvc, "Edge Sync Service", "Service", "Receives telemetry/state batches; ensures idempotency; acks")
+  Container(metricsSvc, "Telemetry/Metrics Service", "Service", "Technical metrics, health, aggregation")
+  Container(exportSvc, "BI Export Service", "Service", "Exports KPIs to external monitoring/BI")
+
+  ContainerQueue(rabbit, "RabbitMQ", "AMQP", "Event bus for analytics results, incidents, telemetry processing")
+
+  ContainerDb(centralDb, "Central DB", "PostgreSQL (logical per-service schemas)", "Farms/devices/configs/incidents/audit")
+  ContainerDb(videoStore, "Video Storage", "s3", "Stores clips/fragments for analytics and operator review")
+}
+
+' --- Farm Agent (Thin Edge) ---
+System_Boundary(edgeSys, "AgroTech Farm Agent System (Thin Edge)") {
+
+  Container(videoGateway, "Video Gateway", "Service", "Connects to cameras, minimal preprocessing, uploads stream/clips to Central when online")
+  Container(equipmentGateway, "Equipment Gateway", "Service", "Controls equipment via vendor adapters; reads telemetry")
+  Container(syncClient, "Sync Client", "Service", "Store-and-forward for telemetry/state; retries; pulls configs/capture policies")
+  Container(offlineBuffer, "Offline Buffer", "Service", "Buffers clips/metadata for later upload when connectivity returns")
+
+  ContainerQueue(mqtt, "MQTT Broker (edge)", "MQTT", "Local messaging with devices/adapters (optional)")
+  ContainerDb(edgeStore, "Edge Store", "Local s3", "Offline queue (telemetry/state + buffered clips metadata), local state")
+}
+
+' --- External systems / devices ---
+System_Ext(cameras, "Video Cameras", "Multi-vendor cameras", "Provide live video streams from farm pens")
+System_Ext(equipment, "Farm Equipment", "Feeders / Drinkers / Water filtration (multi-vendor)", "Controlled devices and sensors producing telemetry")
+System_Ext(idp, "Identity Provider (SSO/OIDC)", "External auth system", "Authenticates users and issues tokens")
+System_Ext(notifProvider, "Notification Provider", "SMS / Push / Telephony", "Delivers notifications when Internet connectivity is available")
+System_Ext(monitoring, "External Monitoring / BI System", "Metrics consumer", "Receives exported metrics/KPIs")
+
+' --- People interactions ---
+Rel(farmOperator, webApp, "Uses", "HTTPS")
+Rel(farmTechnician, webApp, "Uses", "HTTPS")
+Rel(sysAdmin, webApp, "Uses", "HTTPS")
+
+Rel(webApp, apiGateway, "Calls", "HTTPS")
+Rel(apiGateway, idp, "Authenticates/validates tokens", "OIDC")
+
+' --- Central internal flows ---
+Rel(apiGateway, farmSvc, "Routes requests", "HTTP/gRPC")
+Rel(apiGateway, deviceSvc, "Routes requests", "HTTP/gRPC")
+Rel(apiGateway, incidentSvc, "Routes requests", "HTTP/gRPC")
+
+Rel(videoIngestSvc, videoStore, "Stores clips/fragments", "S3/NAS API")
+Rel(analyticsSvc, videoStore, "Reads clips/fragments", "S3/NAS API")
+
+Rel(analyticsSvc, rabbit, "Publishes detections/events", "AMQP")
+Rel(incidentSvc, rabbit, "Consumes detections and builds incidents", "AMQP")
+Rel(notificationSvc, rabbit, "Consumes alert events", "AMQP")
+Rel(metricsSvc, rabbit, "Consumes telemetry events", "AMQP")
+
+Rel(notificationSvc, notifProvider, "Sends notifications", "HTTPS")
+Rel(exportSvc, monitoring, "Exports KPIs", "HTTPS/Batch")
+
+Rel(farmSvc, centralDb, "Reads/Writes", "SQL")
+Rel(deviceSvc, centralDb, "Reads/Writes", "SQL")
+Rel(incidentSvc, centralDb, "Reads/Writes", "SQL")
+Rel(metricsSvc, centralDb, "Reads/Writes", "SQL")
+Rel(syncSvc, centralDb, "Persists sync state/acks", "SQL")
+
+' --- Edge devices ---
+Rel(cameras, videoGateway, "Streams video", "RTSP/ONVIF/etc")
+Rel(videoGateway, offlineBuffer, "Writes buffered clips/metadata when offline", "Local calls")
+Rel(offlineBuffer, edgeStore, "Persists buffered metadata", "Local DB")
+
+Rel(equipmentGateway, equipment, "Controls + telemetry", "Vendor protocols")
+Rel(equipmentGateway, mqtt, "Publishes/consumes device messages", "MQTT")
+
+Rel(equipmentGateway, edgeStore, "Stores telemetry/state", "Local DB")
+
+' --- Edge → Central: video and sync ---
+Rel(videoGateway, videoIngestSvc, "Uploads video stream/clips + metadata", "Secure channel; high bandwidth")
+Rel(syncClient, edgeStore, "Reads buffered telemetry/state", "Local DB")
+Rel(syncClient, syncSvc, "Syncs telemetry/state; pulls capture policies/configs", "HTTPS/gRPC; store-and-forward")
+
+@enduml
